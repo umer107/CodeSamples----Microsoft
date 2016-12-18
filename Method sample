@@ -1,0 +1,55 @@
+        [HttpGet]
+        [Route("Search")]
+        public Result<MessageCenterSearchResult> Search(int messageCenterFilter, long roleId, int pageNo = 1, int pageSize = 100)
+        {
+            try
+            {
+                Result<IEnumerable<MessageSearchResult>> model = null;
+
+                var manager = new ServiceManager();
+                var authData = HttpContext.Current.Items["authdata"] as AuthData;
+
+                if (authData == null)
+                {
+                    return new Result<MessageCenterSearchResult>
+                    {
+                        Data = null,
+                        ResultType = ResultType.Exception,
+                        Exception = new Exception("Authentication Error. Authentication Ticket not found")
+                    };
+                }
+
+                var msgFilter = (EnumMessageCenterFilter)Enum.Parse(typeof(EnumMessageCenterFilter), messageCenterFilter.ToString());
+
+                var userId = authData.UserId;
+                var searchByAgent = true;
+
+                var dictionary = this.ControllerContext.Request.GetQueryNameValuePairs().ToListSafely();
+                var searchedText = "";
+
+                if (dictionary != null && dictionary.Count > 0)
+                {
+                    foreach (var keyValuePair in dictionary)
+                    {
+                        var key = keyValuePair.Key;
+                        if (key.Contains("value"))
+                        {
+                            searchedText = keyValuePair.Value;
+                        }
+                    }
+                }
+
+                var result = manager.MessageCenterService.SearchText(userId, searchedText, msgFilter, roleId, pageNo, pageSize);
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                LogException("Search", ex);
+                return new Result<MessageCenterSearchResult>
+                {
+                    ResultType = ResultType.Exception,
+                    Exception = ex
+                };
+            }
+        }

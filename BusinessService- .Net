@@ -1,0 +1,120 @@
+   public Result<MessageCenterSearchResult> SearchText(long userId, string textToSearch, EnumMessageCenterFilter msgFilter, long roleId, int pageNo = 1, int pageSize = 100, MethodOptions options = null)
+        {
+            var f = "SearchText";
+
+            if (options == null)
+            {
+                options = MethodOptions.Default;
+            }
+
+            var log = GetLogger(f, options.Log);
+
+            try
+            {
+                log.AddInfoString(f, "Parameters: userid=" + userId + ", searchedText=" + textToSearch + ", MessageFilter=" + msgFilter + ", pageNo=" + pageNo + ", pageSize=" + pageSize);
+
+                var searchMsgPredicate = PredicateBuilder.True<ConversationDetail>();
+                var resultCount = 0;
+
+                
+                switch (msgFilter)
+                {
+                    case EnumMessageCenterFilter.Unread:
+                        //if (roleId == (int) EnumUserType.PublicUser)
+                        //{
+                        //    searchMsgPredicate = searchMsgPredicate.And(cd => cd.SenderUserId == userId && cd.Conversation.StartingUserRoleIds.Contains(roleId.ToString()));
+                        //}
+                        //else
+                        //{
+                        //    searchMsgPredicate = searchMsgPredicate.And(cd => cd.SenderUserId == userId && cd.Conversation.StartingUserRoleIds.Contains(roleId.ToString()) || cd.ReceiverUserId == userId && cd.Conversation.ReceivingUserRoleIds.Contains(roleId.ToString()));
+                        //    //.searchMsgPredicate = searchMsgPredicate.And(cd => cd.SenderUserId == userId && cd.Conversation.ReceivingUserRoleIds.Contains(roleId.ToString()));
+                        //}
+                        searchMsgPredicate = searchMsgPredicate.And(cd => cd.Conversation.StartingUserId == userId && cd.Conversation.StartingUserRoleIds.Contains(roleId.ToString()) || cd.Conversation.ReceivingUserId == userId && cd.Conversation.ReceivingUserRoleIds.Contains(roleId.ToString()));
+                        searchMsgPredicate = searchMsgPredicate.And(cd => cd.ReceiverUserId == userId && cd.ReceiverReadDate.HasValue == false);
+                        break;
+                    case EnumMessageCenterFilter.Archived:
+                        searchMsgPredicate = searchMsgPredicate.And(cd => cd.SenderUserId == userId || cd.ReceiverUserId == userId);
+                        searchMsgPredicate = searchMsgPredicate.And(cd=>(cd.Conversation.StartingUserId == userId && cd.Conversation.SenderArchiveDate.HasValue && cd.Conversation.StartingUserRoleIds.Contains(roleId.ToString())) || (cd.Conversation.ReceivingUserId == userId && cd.Conversation.ReceiverArchiveDate.HasValue && cd.Conversation.ReceivingUserRoleIds.Contains(roleId.ToString())));
+                        break;
+                    default: //EnumMessageCenterFilter.All
+                        searchMsgPredicate = searchMsgPredicate.And(cd => (cd.SenderUserId == userId || cd.ReceiverUserId == userId) && cd.ReceiverReadDate.HasValue);
+                        searchMsgPredicate = searchMsgPredicate.And(cd => (cd.Conversation.StartingUserId == userId && cd.Conversation.SenderArchiveDate.HasValue == false && cd.Conversation.StartingUserRoleIds.Contains(roleId.ToString())) || (cd.Conversation.ReceivingUserId == userId && cd.Conversation.ReceiverArchiveDate.HasValue == false && cd.Conversation.ReceivingUserRoleIds.Contains(roleId.ToString())));
+                        //searchMsgPredicate = searchMsgPredicate.And(cd => (cd.Conversation.StartingUserId == userId ) || (cd.Conversation.ReceivingUserId == userId));
+                        break;
+                }
+
+                if (pageNo <= 0)
+                {
+                    pageNo = 1;
+                }
+
+                if (pageSize <= 0)
+                {
+                    pageSize = 100;
+                }
+
+                //We have 3 Main Categories to search so dividing the whole pageSize by 3 to get result from Every Category
+                //pageSize = pageSize / 3;
+
+                //Searches the text in Messages
+                var msgSearchResult = MessagePanelSearch(userId, textToSearch, searchMsgPredicate, pageNo, pageSize, ref resultCount);
+
+                //Searches the text in Property Address / Direct Contact Name / Appraisal Request Name
+                var lstPropResult = PropertyPanelSearch(userId, textToSearch, searchMsgPredicate, pageNo, pageSize, ref resultCount);
+
+                //Searches the text in Property Agent / Property End User's Name
+                var contactResult = PropertyContactPanelSearch(userId, textToSearch, searchMsgPredicate, pageNo, pageSize, ref resultCount);
+
+                //Consolidating the complete Result in one list
+                var lstMsgs = msgSearchResult.ToList();
+                var lstProperties = lstPropResult.ToList();
+                var lstContacts = contactResult.ToList();
+
+                //var lstResult = new List<MessageAutoFillSerachResult>();
+
+                //var lstResult = new List<KeyValuePair<string, List<MessageSerachResult>>>();
+                var result = new MessageCenterSearchResult();
+                
+                if (lstMsgs.Count > 0)
+                {
+                    result.Messages = lstMsgs.ToArray();
+                }
+
+                if (lstProperties.Count > 0)
+                {
+                    result.Properties = lstProperties.ToArray();
+                }
+
+                //If search is from EndUser then do not send this (IInd Panel is not there in case of EndUser)
+                if (lstContacts.Count > 0)
+                {
+                    result.Users = lstContacts.ToArray();
+                }
+
+                return new Result<MessageCenterSearchResult>
+                {
+                    Data = result,
+                    ResultType = ResultType.Success,
+                    Message = resultCount.ToString()
+                };
+
+            }
+            catch (Exception ex)
+            {
+                log.AddErrorString(f + " Exception", "Exception: " + ex.Message + "; Stack Trace: " + ex.StackTrace);
+
+                if (ex.InnerException != null)
+                {
+                    log.AddErrorString(f + " Inner Exception", "Inner Exception Message:" + ex.InnerException.Message + "; Stack Trace:" + ex.InnerException.StackTrace);
+                }
+
+                return ReturnException<MessageCenterSearchResult>(ex);
+            }
+            finally
+            {
+                Parallel.Invoke(() =>
+                {
+                    log.Save();
+                });
+            }
+        }

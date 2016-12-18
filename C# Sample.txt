@@ -1,0 +1,196 @@
+        private static void Init()
+        {
+            if (baran.IsNull())
+            {
+                bool isDeleted = "IsDeleted".AppSetting<bool>(false);
+
+                string q = "";
+
+                if (isDeleted)
+                {
+                    q = "Select top 5 * from Photo_orphan where IsDefregmented = 0";
+                }
+                else
+                {
+                    q = "Select top 30 * from Photo_orphan where isuploaded = 1 and IsVerified != 1 and Isremoved = 0 and PhotoIdParent is null";
+                }
+                MediaWork mw = new MediaWork();
+                baran = mw.Repository.db.Database.SqlQuery<Photo_orphan>(q).ToListSafely();
+
+                if (baran.IsNotNull() && baran.Count > 0)
+                {
+                    Console.WriteLine("");
+                    Console.WriteLine("...................................");
+
+                    Console.WriteLine("Queue picked up for defregmentation");
+                    DeleteFiles(baran);
+                }
+            }
+        }
+
+        public static void DeleteFiles(List<Photo_orphan> lst)
+        {
+            var upquery = FormUpdateTokens(lst);
+            bool isDeleted = "IsDeleted".AppSetting<bool>(false);
+            
+            foreach (var itm in upquery.GetDetail())
+            {
+                var rootFolder = new MediaWork().Repository.Read<MediaServerPort>()
+                .Where(x => x.MediaServerId == itm.photo.MediaServerPortId).FirstOrDefault().RootFolder;
+                var fullName =  rootFolder + "\\" + itm.FileName;
+                var destiNation = "I:\\MovedImages\\" + itm.FileName;
+                Console.WriteLine("");
+                Console.WriteLine("...................................");
+                var mw = new MediaWork(); 
+                var logFactory = new DefragmenatorLog();
+                DefregmentationLog log = null;
+                log = InitLog(itm, mw, logFactory, log);
+                Task.Run(() => {
+                try
+                {
+                    if (isDeleted)
+                    {                                         
+
+                        if (itm.photo.AgencyContainerId.IsNotNull())
+                        {
+                            log.WasUploadedOnCloud = true;
+                            logFactory.UpdateLog(log, mw);
+                        }
+                        else
+                        {
+                            log.WasUploadedOnCloud = false;
+                            logFactory.UpdateLog(log, mw);
+                        }
+                        
+                        var isDeletedFromCloud = new DeleteCDNBlob().DeleteFromCloud(itm.photo, mw, log, logFactory);
+                        try
+                        {
+                            var file = new FileInfo(fullName);
+                            if(System.IO.File.Exists(fullName))
+                            {
+                                try
+                                {
+                                    System.IO.File.Move(fullName, destiNation);
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.WriteLine("Unable to copy image from destination....");
+                                    Console.ReadKey();
+                                }
+                                log.LogDescription = itm.FileName;
+                                
+                                log.IsDeletedFromDrive = true;
+                                logFactory.UpdateLog(log, mw);
+                                Console.ForegroundColor = ConsoleColor.DarkYellow;
+                                Console.WriteLine(fullName + " is deleted");
+                            }
+                            else
+                            {
+                                log.NotFoundonDrive = true;
+                                log.ErrorDescription = fullName;
+                                logFactory.UpdateLog(log, mw);
+                                Console.ForegroundColor = ConsoleColor.Magenta;
+                                Console.WriteLine(fullName + " not found on system..");
+                            }
+                            
+                            //Console.ReadKey();
+                        }
+                        catch (Exception ex)
+                        {
+                            log.NotFoundonDrive = true;
+                            log.ErrorDescription += ex.GetOriginalException().Message + " - ";
+                            logFactory.UpdateLog(log, mw);
+                        }
+                        
+                    }
+                    else
+                    {
+                        new FileInfo(fullName.ToUpper()).MoveTo("MoveDir".AppSetting<string>(""));
+                        Console.ForegroundColor = ConsoleColor.DarkYellow;
+                        Console.WriteLine(fullName + " is moved");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("");
+                    Console.WriteLine("...................................");
+                    Console.WriteLine("Error: " + ex.Message);
+                    Console.WriteLine(".....................................");
+                }
+                });
+            }
+            try
+            {
+                var mw = new MediaWork();
+                mw.Repository.db.Database.ExecuteSqlCommand(upquery.UpdateQuery);
+                baran = null;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Error: " + ex.Message);
+                Console.ReadKey();
+            }
+        }
+
+        private static DefregmentationLog InitLog(FileDetail itm, MediaWork mw, DefragmenatorLog logFactory, DefregmentationLog log)
+        {           
+            log = logFactory.Initialize(itm.photo, mw);            
+            return log;
+        }
+
+        private static void GetChildrens(Photo_orphan photo, List<Photo_orphan> lst)
+        {
+            var childrens = new MediaWork().Repository.Read<Photo_orphan>().Where(x => x.PhotoIdParent == photo.PhotoId && x.IsRemoved == true).ToListSafely();
+            if (childrens.IsNotNull() && childrens.Count > 0)
+            {
+                foreach (var item in childrens)
+                {
+                    lst.Add(item);
+                }
+            }
+        }
+
+        private static UpdateTokens FormUpdateTokens(List<Photo_orphan> lst)
+        {
+            bool isDeleted = "IsDeleted".AppSetting<bool>(false);
+            string updateQuery = "";
+            if (isDeleted)
+            {
+                updateQuery = "Update Photo_orphan Set IsDefregmented = 1";
+            }
+            else
+            {
+                updateQuery = "Update Photo_orphan Set Isverified = 1";
+            }
+            string updateTokens = "";
+            var token = new UpdateTokens();
+            //token.FilesName = new List<string>();
+            int counter = 1;
+            List<Photo_orphan> childrens = new List<Photo_orphan>();
+            foreach (var itm in lst)
+            {
+                GetChildrens(itm, childrens);
+            }
+            foreach (var item in childrens)
+            {
+                lst.Add(item);
+            }
+            foreach (var item in lst)
+            {
+                token.AddFileDetail(new DeleteCDNBlob().CreateFileName(item), item);
+                Console.WriteLine(item.PhotoGuid.ToString());
+                // System.Threading.Thread.Sleep(1000);
+                if (counter == lst.Count)
+                {
+                    updateTokens += item.PhotoId.ToString();
+                }
+                else
+                {
+                    updateTokens += item.PhotoId.ToString() + ",";
+                }
+                counter++;
+            }
+            updateQuery += " where PhotoId in (" + updateTokens + ")";
+            token.UpdateQuery = updateQuery;
+            return token;
+        }
